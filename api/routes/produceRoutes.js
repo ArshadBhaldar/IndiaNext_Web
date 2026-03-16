@@ -9,6 +9,7 @@ const {
   traceProduce,
   approveBatch,
   transferProduce,
+  updateStage,
 } = require("../controllers/produceController");
 
 // @route   GET /api/produce/all
@@ -30,5 +31,17 @@ router.post("/approve", approveBatch);
 // @route   POST /api/produce/transfer
 // @desc    Transfer ownership or update location of a batch
 router.post("/transfer", transferProduce);
+
+
+// --- Mapping the user's requested root-level API formats to the produce controller
+
+// @route   POST /api/register-product
+router.post("/register-product", addProduce);
+
+// @route   POST /api/update-stage
+router.post("/update-stage", updateStage);
+
+// @route   GET /api/trace/:productID
+router.get("/trace/:productID", traceProduce);
 
 module.exports = router;

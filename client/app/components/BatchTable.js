@@ -81,7 +81,7 @@ export default function BatchTable({ batches, selectedId, onSelectBatch }) {
 
       {/* Pagination footer */}
       <div className="px-5 py-3 text-xs text-slate-400">
-        Showing 1 to {batches.length} of 24 incoming batches
+        Showing 1 to {batches.length} of {batches.length} incoming batches
       </div>
     </div>
   );

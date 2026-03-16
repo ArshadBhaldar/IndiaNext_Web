@@ -10,6 +10,7 @@ const cors = require("cors");
 const produceRoutes = require("./api/routes/produceRoutes");
 const roleRoutes = require("./api/routes/roleRoutes");
 const uploadRoutes = require("./api/routes/uploadRoutes");
+const kotlinRoutes = require("./api/routes/kotlinRoutes");
 
 // Import services
 const web3Service = require("./api/services/web3Service");
@@ -41,6 +42,11 @@ app.get("/", (_req, res) => {
 });
 
 app.use("/api/produce", produceRoutes);
+
+// The user code expects these exactly under /api instead of /api/produce
+app.use("/api", produceRoutes); 
+app.use("/api", kotlinRoutes); 
+
 app.use("/api/roles", roleRoutes);
 app.use("/api/upload", uploadRoutes);
 

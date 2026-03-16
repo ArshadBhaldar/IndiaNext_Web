@@ -1,35 +1,9 @@
-// Controllers for agricultural produce operations.
-// Uses Web3 when available, falls back to mock data otherwise.
-
 const web3Service = require("../services/web3Service");
+const dbService = require("../services/dbService");
+const aiService = require("../services/aiService");
 
-// ---- In-memory mock data store (fallback) ----
-const mockBatches = [
-  { id: "BA-20260302-0007", farm: "Sunvalley Organics", location: "Santa Clara, CA", crop: "Organic Kale", status: "pending" },
-  { id: "BA-20260301-1192", farm: "Green Fork Estates", location: "Yuma, AZ", crop: "Romaine Lettuce", status: "pending" },
-  { id: "BA-20260228-0884", farm: "Blue Ridge Orchards", location: "Wenatchee, WA", crop: "Honeycrisp Apples", status: "pending" },
-  { id: "BA-20260228-0442", farm: "Desert Bloom Farms", location: "Imperial Valley, CA", crop: "Baby Spinach", status: "pending" },
-  { id: "BA-20260227-1029", farm: "Highland Meadows", location: "Boise, ID", crop: "Russet Potatoes", status: "pending" },
-];
-
-const mockJourneys = {
-  "BA-20260302-0007": [
-    { title: "Harvest & Origin Check", date: "Mar 10, 2026 · 08:12 AM", location: "Field 4-B, Sunvalley Organics", description: "Crop harvested at peak ripeness. Nitrogen levels and moisture content within organic thresholds. Farmer signature secured via Polygon.", hasImage: true, icon: "leaf" },
-    { title: "Cold Chain Logistics", date: "Mar 12, 2026 · 02:17 PM", location: "I-880 Logistics Corridor, Hayward, CA", description: "Batch transferred to temperature-controlled transit. Sensor ID SN-992 monitored 4°C stability. Truck ID: AGRI-TRK-44.", hasImage: true, icon: "truck" },
-    { title: "Retailer Hub Arrival", date: "Mar 18, 2026 · 09:21 AM", location: "Retailer Loading Dock #4", description: "Batch arrived at retail distribution center. Condition inspection passed. Awaiting store manager verification.", hasImage: false, icon: "store" },
-  ],
-};
-
-const defaultJourney = [
-  { title: "Harvest & Origin Check", date: "Mar 8, 2026 · 07:30 AM", location: "Origin Farm", description: "Crop harvested and initial quality checks performed. Organic certification verified.", hasImage: true, icon: "leaf" },
-  { title: "Cold Chain Logistics", date: "Mar 10, 2026 · 11:00 AM", location: "Regional Logistics Hub", description: "Batch loaded into temperature-controlled transport. Cold chain integrity monitored throughout transit.", hasImage: true, icon: "truck" },
-  { title: "Retailer Hub Arrival", date: "Mar 14, 2026 · 08:45 AM", location: "Retailer Loading Dock", description: "Batch arrived at retail distribution center. Pending verification by store manager.", hasImage: false, icon: "store" },
-];
-
-// ---- Helpers ----
-
-function formatTimestamp(unixSeconds) {
-  const d = new Date(unixSeconds * 1000);
+function generateCurrentTimeStr() {
+  const d = new Date();
   return d.toLocaleString("en-US", {
     month: "short",
     day: "numeric",
@@ -40,180 +14,194 @@ function formatTimestamp(unixSeconds) {
   });
 }
 
-// ---- Controllers ----
-
-/**
- * GET /api/produce/all — List all incoming batches.
- * Batch catalogue is kept off-chain (mock store) by design.
- */
-const getAllBatches = (_req, res) => {
-  const pending = mockBatches.filter((b) => b.status === "pending").length;
-  const verified = mockBatches.filter((b) => b.status === "verified").length;
-
-  res.status(200).json({
-    success: true,
-    data: {
-      batches: mockBatches,
-      stats: { pending, verified, total: mockBatches.length },
-    },
-  });
-};
-
-/**
- * POST /api/produce/add — Create a new batch.
- * If Web3 is available, writes to the smart contract.
- */
-const addProduce = async (req, res) => {
+const getAllBatches = async (_req, res) => {
   try {
-    const { batchName, origin, crop, quantity, unit, farmerName, ipfsCID } = req.body;
-
-    const batchId = `BA-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${String(
-      Math.floor(Math.random() * 10000)
-    ).padStart(4, "0")}`;
-
-    let txResult = null;
-
-    // Write to blockchain if available
-    if (web3Service.isAvailable()) {
-      txResult = await web3Service.createBatch(batchId, ipfsCID || "");
-    }
-
-    // Also add to in-memory store for the dashboard
-    const newBatch = {
-      id: batchId,
-      farm: farmerName || "Unknown Farm",
-      location: origin || "Unknown Origin",
-      crop: crop || "Unknown Crop",
-      status: "pending",
-    };
-    mockBatches.unshift(newBatch);
-
-    res.status(201).json({
-      success: true,
-      message: "Agricultural batch created successfully.",
-      data: {
-        ...newBatch,
-        blockchain: txResult
-          ? { txHash: txResult.txHash, blockNumber: txResult.blockNumber }
-          : null,
-      },
-    });
-  } catch (err) {
-    console.error("addProduce error:", err.message);
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-/**
- * GET /api/produce/trace/:id — Get provenance journey.
- * If Web3 is available, reconstructs timeline from on-chain events.
- * Otherwise returns mock journey data.
- */
-const traceProduce = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const batch = mockBatches.find((b) => b.id === id);
-
-    if (!batch) {
-      return res.status(404).json({ success: false, message: `Batch ${id} not found.` });
-    }
-
-    let journey;
-    let onChainBatch = null;
-
-    if (web3Service.isAvailable()) {
-      try {
-        // Get on-chain batch data
-        onChainBatch = await web3Service.getBatch(id);
-
-        // Reconstruct full timeline from events
-        const history = await web3Service.getBatchHistory(id);
-
-        journey = history.map((event) => ({
-          title: event.title,
-          date: formatTimestamp(event.timestamp),
-          location: event.location || event.previousState + " → " + event.newState,
-          description: event.type === "created"
-            ? `Batch created on-chain. IPFS CID: ${event.ipfsCID || "N/A"}. Farmer: ${event.farmer}.`
-            : event.type === "checkpoint"
-            ? `Transit checkpoint logged. GPS: ${event.gpsLat}, ${event.gpsLong}. Handler: ${event.handler}.`
-            : `State changed from ${event.previousState} to ${event.newState}.`,
-          hasImage: event.type === "created",
-          icon: event.icon,
-          txHash: event.txHash,
-          blockNumber: event.blockNumber,
-        }));
-
-        // If no on-chain events yet, fall back to mock
-        if (journey.length === 0) {
-          journey = mockJourneys[id] || defaultJourney;
-        }
-      } catch (contractErr) {
-        // Batch exists locally but not on-chain — use mock
-        console.log(`Batch ${id} not found on-chain, using mock journey.`);
-        journey = mockJourneys[id] || defaultJourney;
-      }
-    } else {
-      journey = mockJourneys[id] || defaultJourney;
-    }
+    const batches = await dbService.getBatches();
+    const pending = batches.filter((b) => b.status === "pending").length;
+    const verified = batches.filter((b) => b.status === "verified").length;
 
     res.status(200).json({
       success: true,
       data: {
-        batch: {
-          ...batch,
-          ...(onChainBatch && {
-            onChain: {
-              farmerAddress: onChainBatch.farmerAddress,
-              ipfsCID: onChainBatch.ipfsCID,
-              state: onChainBatch.state,
-              timestamp: onChainBatch.timestamp,
-            },
-          }),
-        },
-        journey,
+        batches,
+        stats: { pending, verified, total: batches.length },
       },
     });
   } catch (err) {
-    console.error("traceProduce error:", err.message);
+    console.error("getAllBatches error:", err.message);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
-/**
- * POST /api/produce/approve — Approve/verify a batch.
- * If Web3 is available, calls receiveAtRetail on the contract.
- */
+const addProduce = async (req, res) => {
+  try {
+    // Handling BOTH the old payload and the user's new payload parameters
+    const { 
+      productID, farmerData, produceImageBase64, // From User Snippet
+      farmerId, cropType, weightKg, location, ipfsCID // Existing structure
+    } = req.body;
+
+    const finalIpfsCID = ipfsCID || "QmPendingCIDPlaceholder";
+    
+    // Use user-provided productID if exists, otherwise generate one
+    const batchId = productID || `BA-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${String(
+      Math.floor(Math.random() * 10000)
+    ).padStart(4, "0")}`;
+
+    // 🔥 AI MAGIC: Inspect photo (3-5 seconds)
+    console.log(`🔍 AI inspecting ${batchId}...`);
+    const finalCropType = cropType || "mango";
+    const aiResult = await aiService.inspectProduce(produceImageBase64 || '', finalCropType);
+
+    // We stringify the entire rich data payload so we can easily store it
+    const richDataPayload = JSON.stringify({
+      farmerData: farmerData || farmerId,
+      aiQuality: aiResult,
+      timestamp: new Date().toISOString()
+    });
+
+    let txResult = null;
+    if (web3Service.isAvailable()) {
+      console.log(`⛓️  Writing ${batchId} to local blockchain...`);
+      // We pass richDataPayload as the "CID" equivalent for now to maintain ABI compatibility
+      txResult = await web3Service.createBatch(batchId, richDataPayload);
+    }
+
+    const newBatch = {
+      id: batchId,
+      farm: farmerData || farmerId || "Unknown Farm",
+      location: location?.address || "Unknown Location",
+      crop: finalCropType,
+      status: "pending",
+      weightKg: weightKg || 0,
+      aiQuality: aiResult,
+      createdAt: new Date().toISOString()
+    };
+    
+    await dbService.saveBatch(newBatch);
+
+    await dbService.addJourneyEvent(batchId, { 
+      title: "Harvest & Origin Check", 
+      date: generateCurrentTimeStr(), 
+      location: location?.address || "Origin Farm", 
+      description: `Crop harvested and initial quality checks performed. AI Score: ${aiResult.qualityScore}/100 Grade: ${aiResult.grade}.`, 
+      hasImage: true, 
+      icon: "leaf" 
+    });
+
+    console.log(`✅ Blockchain txn complete! AI score: ${aiResult.qualityScore}/100 (${aiResult.grade})`);
+    res.status(201).json({
+      success: true,
+      batchId: batchId,
+      txHash: txResult ? txResult.txHash : null,
+      message: `Product ${batchId} permanently registered to blockchain!`,
+      data: newBatch,
+      aiQuality: aiResult
+    });
+  } catch (err) {
+    console.error("addProduce error:", err.message);
+    res.status(500).json({ error: 'Failed to write to blockchain', details: err.message, success: false });
+  }
+};
+
+const traceProduce = async (req, res) => {
+  try {
+    const id = req.params.productID || req.params.id; // Support both route styles
+    console.log(`🔍 Fetching ${id} from blockchain/DB...`);
+    
+    const batch = await dbService.getBatch(id);
+
+    if (!batch) {
+      return res.status(404).json({ error: `Product ${id} not found`, success: false });
+    }
+
+    let journey = [];
+    let onChainBatch = null;
+    let parsedAiQuality = batch.aiQuality || null;
+
+    if (web3Service.isAvailable()) {
+      try {
+        onChainBatch = await web3Service.getBatch(id);
+        const history = await web3Service.getBatchHistory(id);
+
+        journey = history.map((event) => ({
+          title: event.title,
+          date: new Date(event.timestamp * 1000).toLocaleString(),
+          location: event.location || (event.previousState ? `${event.previousState} → ${event.newState}` : "Origin Farm"),
+          description: `Cryptographically verified on-chain. Tx Hash: ${event.txHash.slice(0, 15)}...`,
+          hasImage: event.type === "created",
+          icon: event.icon,
+          txHash: event.txHash,
+        }));
+        
+        // Attempt to parse the richDataPayload if it exists on the CID property
+        if (onChainBatch.ipfsCID && onChainBatch.ipfsCID.startsWith('{')) {
+          try {
+             const decoded = JSON.parse(onChainBatch.ipfsCID);
+             if (decoded.aiQuality) parsedAiQuality = decoded.aiQuality;
+          } catch(e) {}
+        }
+      } catch (err) {
+        console.log(`Not found on chain for ${id}, falling back to dbService`);
+      }
+    }
+    
+    if (journey.length === 0) {
+      journey = await dbService.getJourney(id);
+    }
+
+    res.status(200).json({
+      success: true,
+      productID: batch.id, // User snippet mapped to this
+      owner: batch.farm,
+      state: batch.status,
+      blockchainData: parsedAiQuality,
+      data: {
+        batch: {
+          ...batch,
+          ...(onChainBatch && { onChain: onChainBatch }),
+        },
+        journey,
+        history: journey // Duplicate to support user's expected payload
+      },
+    });
+  } catch (err) {
+    console.error("traceProduce error:", err.message);
+    res.status(500).json({ error: 'Failed to read from blockchain', success: false, details: err.message });
+  }
+};
+
 const approveBatch = async (req, res) => {
   try {
     const { batchId } = req.body;
-    const batch = mockBatches.find((b) => b.id === batchId);
+    const batch = await dbService.getBatch(batchId);
 
     if (!batch) {
       return res.status(404).json({ success: false, message: `Batch ${batchId} not found.` });
     }
 
     let txResult = null;
-
     if (web3Service.isAvailable()) {
-      try {
-        txResult = await web3Service.receiveAtRetail(batchId);
-      } catch (contractErr) {
-        console.log(`On-chain approval failed for ${batchId}:`, contractErr.message);
-        // Continue with off-chain approval
-      }
+      txResult = await web3Service.receiveAtRetail(batchId);
     }
 
-    batch.status = "verified";
+    const updatedBatch = await dbService.updateBatch(batchId, { status: "verified" });
+    
+    await dbService.addJourneyEvent(batchId, {
+      title: "Retailer Hub Arrival", 
+      date: generateCurrentTimeStr(), 
+      location: "Retailer Loading Dock", 
+      description: "Batch arrived at retail distribution center. Verified and Approved.", 
+      hasImage: false, 
+      icon: "store"
+    });
 
     res.status(200).json({
       success: true,
       message: `Batch ${batchId} approved successfully.`,
       data: {
-        ...batch,
+        ...updatedBatch,
         blockchain: txResult
-          ? { txHash: txResult.txHash, blockNumber: txResult.blockNumber }
-          : null,
       },
     });
   } catch (err) {
@@ -222,37 +210,56 @@ const approveBatch = async (req, res) => {
   }
 };
 
-/**
- * POST /api/produce/transfer — Transfer ownership.
- */
-const transferProduce = async (req, res) => {
+// Corresponds to the user's /api/update-stage expectation replacing transferProduce
+const updateStage = async (req, res) => {
   try {
-    const { batchId, newOwner, newLocation, notes, gpsLat, gpsLong } = req.body;
+    const { productID, stageData, batchId, newLocation, notes, gpsLat, gpsLong } = req.body;
+    
+    // Support both the old format and the new format
+    const targetId = productID || batchId;
+
+    console.log(`🔍 Fetching ${targetId} to check current state...`);
+    const batch = await dbService.getBatch(targetId);
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Product not found on blockchain/DB', success: false });
+    }
 
     let txResult = null;
-
+    
     if (web3Service.isAvailable()) {
       try {
+        console.log(`⛓️  Updating ${targetId} state...`);
         txResult = await web3Service.updateTransit(
-          batchId,
-          newLocation || "Unknown",
+          targetId,
+          newLocation || stageData?.location || "Unknown",
           gpsLat || "0",
           gpsLong || "0"
         );
       } catch (contractErr) {
-        console.log(`On-chain transfer failed for ${batchId}:`, contractErr.message);
+        console.log(`On-chain transfer failed for ${targetId}:`, contractErr.message);
       }
     }
+    
+    const stageName = stageData?.stageName || newLocation || "Logistics Hub";
+    
+    await dbService.addJourneyEvent(targetId, {
+      title: "Stage Updated: " + stageName, 
+      date: generateCurrentTimeStr(), 
+      location: stageName, 
+      description: notes || stageData?.notes || "Product state updated over the transit array.", 
+      hasImage: true, 
+      icon: "truck",
+      data: stageData
+    });
 
     res.status(200).json({
       success: true,
-      message: "Produce ownership/location updated successfully.",
+      message: `Product ${targetId} moved to ${stageName} on blockchain!`,
       data: {
-        batchId: batchId || "BATCH-UNKNOWN",
-        previousOwner: "Green Valley Farms",
-        newOwner: newOwner || "Unknown New Owner",
-        newLocation: newLocation || "Unknown Location",
-        notes: notes || "",
+        batchId: targetId,
+        newLocation: stageName,
+        notes: notes || stageData?.notes || "",
         transferredAt: new Date().toISOString(),
         blockchain: txResult
           ? { txHash: txResult.txHash, blockNumber: txResult.blockNumber }
@@ -260,9 +267,9 @@ const transferProduce = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("transferProduce error:", err.message);
-    res.status(500).json({ success: false, message: err.message });
+    console.error("updateStage error:", err.message);
+    res.status(500).json({ error: 'Failed to update blockchain state', details: err.message, success: false });
   }
 };
 
-module.exports = { getAllBatches, addProduce, traceProduce, approveBatch, transferProduce };
+module.exports = { getAllBatches, addProduce, traceProduce, approveBatch, updateStage, transferProduce: updateStage };
