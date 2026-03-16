@@ -27,6 +27,10 @@ Desktop.ini
 dist/
 build/
 
+# Hardhat
+artifacts/
+cache/
+
 # Coverage & testing
 coverage/
 
